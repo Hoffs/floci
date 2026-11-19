@@ -1822,7 +1822,7 @@ public class EksClusterManager
                 .withAttachStdout(true)
                 .withAttachStderr(false)
                 .exec();
-        return dockerClient
+        return lifecycleManager.getStreamingDockerClient()
                 .execStartCmd(execCreate.getId())
                 .exec(logStreamer.execLogCallbackForAccount(
                         accountId, logGroup, logStream, region, "eks-audit:" + clusterName, false));
@@ -3880,6 +3880,7 @@ public class EksClusterManager
         }
         return UserDataPipeline.executeUserData(
                 dockerClient,
+                lifecycleManager.getStreamingDockerClient(),
                 node.containerId(),
                 context,
                 userData,
