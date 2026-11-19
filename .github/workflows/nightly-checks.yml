@@ -26,19 +26,25 @@ concurrency:
 
 jobs:
   checks:
-    name: Nightly checks
+    name: Nightly checks (shard ${{ matrix.shard }})
     runs-on: ubuntu-latest
-    # The checks run one after another, each within its own @Timeout bounds, so the job allows their sum, and about
-    # twenty minutes for the build, the image and the prefetch: EmrPigStepsNightlyIntegrationTest's 30,
+    # The checks are split between two shards, each running its share one after another within the checks' own
+    # @Timeout bounds, so each shard allows at most the sum of every check plus about twenty minutes for the
+    # build, the image and the prefetch: EmrPigStepsNightlyIntegrationTest's 30,
     # EmrFlociContainerNightlyIntegrationTest's 20 and 4 for its setup,
     # EmrServerlessCustomImageNightlyIntegrationTest's 85 and 21 for its setup,
     # EmrServerlessSparkConnectNightlyIntegrationTest's 30, EmrSessionServerNightlyIntegrationTest's 40,
     # EmrHiveStepsNightlyIntegrationTest's five two-minute tests, one five-minute test and six-minute setup,
-    # EmrNotebookExecutionNightlyIntegrationTest's 40, EmrAppUiNightlyIntegrationTest's 30, and
-    # EmrServerlessDashboardNightlyIntegrationTest's 15, 336 in all. A check added, or a bound raised, raises this with
-    # it, so a slow check fails with its own message rather than the job being cancelled with none; a hosted runner
-    # ends any job at 360 minutes, which this stays under.
+    # EmrNotebookExecutionNightlyIntegrationTest's 40, EmrAppUiNightlyIntegrationTest's 30,
+    # EmrServerlessDashboardNightlyIntegrationTest's 15 and EmrDockerRunnerNightlyIntegrationTest's twelve
+    # two-minute tests and two-minute setup, 362 in all. That sum no longer fits the 360 minutes a hosted runner
+    # allows one job, but no shard runs more than about two thirds of it, so a shard's bound stays under it. A check
+    # added, or a bound raised, must keep each shard's share under 336.
     timeout-minutes: 356
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
     # A fork's schedule would spend its owner's minutes on checks it never asked for; a draft waits until it is
     # ready for review, as the CI shards do.
     if: >-
@@ -48,13 +54,29 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # Every test is a top-level class in src/test/java, so the file name is the class name, as ci.yml relies on.
+      # On a pull request only the checks it adds or changes run, all of them when it changes this workflow; the
+      # schedule and a manual run take every check. Each shard then runs every other check of that list.
       - name: List the nightly checks
         id: list
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          SHARD: ${{ matrix.shard }}
         run: |
+          set -euo pipefail
           cd src/test/java
           find . -name '*NightlyIntegrationTest.java' | sed 's|^\./||; s|\.java$||' | LC_ALL=C sort \
-            > "$GITHUB_WORKSPACE/nightly.txt"
+            > "$GITHUB_WORKSPACE/all-nightly.txt"
           cd "$GITHUB_WORKSPACE"
+          if [ -n "$PR" ]; then
+            gh pr diff "$PR" --repo "$GITHUB_REPOSITORY" --name-only > changed.txt
+            if ! grep -qx '.github/workflows/nightly-checks.yml' changed.txt; then
+              sed -n 's|^src/test/java/\(.*NightlyIntegrationTest\)\.java$|\1|p' changed.txt | LC_ALL=C sort \
+                | comm -12 all-nightly.txt - > selected.txt
+              mv selected.txt all-nightly.txt
+            fi
+          fi
+          awk -v shard="$SHARD" '(NR - 1) % 2 == shard - 1' all-nightly.txt > nightly.txt
           count=$(wc -l < nightly.txt | tr -d ' ')
           echo "count=$count" >> "$GITHUB_OUTPUT"
           echo "$count nightly checks"
@@ -62,7 +84,7 @@ jobs:
 
       - name: No nightly checks yet
         if: steps.list.outputs.count == '0'
-        run: echo "::notice title=Nightly checks::No *NightlyIntegrationTest class exists, so nothing ran."
+        run: echo "::notice title=Nightly checks::No nightly check falls to this shard, so nothing ran."
 
       # The checks' images run to several gigabytes, a pushed copy of one included, and the runner's disk holds
       # toolchains they never use.
